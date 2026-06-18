@@ -601,8 +601,14 @@ window.addEventListener('DOMContentLoaded', () => {
     try {
       const s = JSON.parse(saved);
       accessToken = s.access_token;
-      currentUser = s.user;
-      showApp();
+      // Fallback: rebuild user from JWT if stored user is missing id
+      const jwtPayload = parseJwt(s.access_token);
+      currentUser = (s.user && s.user.id) ? s.user : { id: jwtPayload?.sub, email: jwtPayload?.email };
+      if (currentUser?.id) {
+        showApp();
+      } else {
+        localStorage.removeItem('rv_session');
+      }
     } catch(e) { localStorage.removeItem('rv_session'); }
   }
 });
@@ -631,12 +637,36 @@ async function handleSignIn() {
   setAuthError('');
   const btn = document.getElementById('sign-in-btn');
   btn.innerHTML = '<span class="spinner"></span>'; btn.disabled = true;
-  const data = await sbPost('/auth/v1/token?grant_type=password', { email, password: pw });
-  btn.textContent = 'Sign In'; btn.disabled = false;
-  if (data.error) { setAuthError(data.error_description || data.error); return; }
-  accessToken = data.access_token; currentUser = data.user;
-  localStorage.setItem('rv_session', JSON.stringify({ access_token: data.access_token, user: data.user }));
-  showApp();
+  try {
+    const data = await sbPost('/auth/v1/token?grant_type=password', { email, password: pw });
+    console.log('Sign-in response:', JSON.stringify(data));
+    btn.textContent = 'Sign In'; btn.disabled = false;
+    if (data.error || data.error_code) {
+      setAuthError(data.error_description || data.msg || data.error || 'Sign in failed');
+      return;
+    }
+    accessToken = data.access_token;
+    // Handle both old shape (data.user) and new Supabase shape
+    const jwtPayload = parseJwt(data.access_token);
+    currentUser = data.user || { id: jwtPayload?.sub, email: jwtPayload?.email };
+    if (!currentUser?.id) {
+      setAuthError('Could not read user info — see console');
+      console.error('Full auth response:', data);
+      return;
+    }
+    localStorage.setItem('rv_session', JSON.stringify({ access_token: data.access_token, user: currentUser }));
+    showApp();
+  } catch(e) {
+    btn.textContent = 'Sign In'; btn.disabled = false;
+    setAuthError('Network error — check your connection');
+    console.error(e);
+  }
+}
+
+function parseJwt(token) {
+  try {
+    return JSON.parse(atob(token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+  } catch { return null; }
 }
 
 async function handleSignUp() {
